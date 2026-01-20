@@ -47,6 +47,13 @@
                                   Height="26"
                                   VerticalAlignment="Center" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <CheckBox Content="GZip decode"
+                                  IsChecked="{Binding UseZipDecompression}"
+                                  IsVisible="{Binding CanUseZipDecompression}"
+                                  VerticalAlignment="Center"
+                                  ToolTip.Tip="Attempt to decompress GZip message bodies when peeking subscriptions" />
+                    </StackPanel>
 
                 </StackPanel>
                                         <StackPanel Grid.Column="1" 

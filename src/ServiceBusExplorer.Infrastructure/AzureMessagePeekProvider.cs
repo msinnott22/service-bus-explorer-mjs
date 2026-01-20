@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Text;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using ServiceBusExplorer.Infrastructure.Models;
@@ -16,10 +18,38 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
         _adminClient = authContext.CreateAdminClient();
     }
 
+    private static string GetMessageBody(ServiceBusReceivedMessage message, bool decompressBodies)
+    {
+        if (!decompressBodies)
+        {
+            return message.Body.ToString();
+        }
+
+        var bodyBytes = message.Body.ToArray();
+        if (bodyBytes.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var inputStream = new MemoryStream(bodyBytes);
+            using var zipStream = new GZipStream(inputStream, CompressionMode.Decompress, leaveOpen: false);
+            using var outputStream = new MemoryStream();
+            zipStream.CopyTo(outputStream);
+            return Encoding.UTF8.GetString(outputStream.ToArray());
+        }
+        catch
+        {
+            return message.Body.ToString();
+        }
+    }
+
     public async Task<IReadOnlyList<ServiceBusReceivedMessageDto>> PeekAsync(
         string queueOrTopic,
         string? subscription,
         int maxMessages = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         var receiver = subscription is null
@@ -35,7 +65,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
                 m.Subject ?? string.Empty,
                 m.ContentType ?? string.Empty,
                 m.EnqueuedTime,
-                m.Body.ToString(),
+                GetMessageBody(m, decompressBodies),
                 false))];
     }
 
@@ -43,6 +73,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
         string queueOrTopic,
         string? subscription,
         int maxMessages = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         var receiver = subscription is null
@@ -65,7 +96,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
                 m.Subject ?? string.Empty,
                 m.ContentType ?? string.Empty,
                 m.EnqueuedTime,
-                m.Body.ToString(),
+                GetMessageBody(m, decompressBodies),
                 true))];
     }
 
@@ -74,6 +105,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
         string? subscription,
         int pageNumber,
         int pageSize = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         Console.WriteLine($"[AzureMessagePeekProvider] PeekPagedAsync - Page: {pageNumber}, Size: {pageSize}");
@@ -138,7 +170,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
                 m.Subject ?? string.Empty,
                 m.ContentType ?? string.Empty,
                 m.EnqueuedTime,
-                m.Body.ToString(),
+                GetMessageBody(m, decompressBodies),
                 false))
             .ToList();
 
@@ -156,6 +188,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
         string? subscription,
         int pageNumber,
         int pageSize = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         Console.WriteLine($"[AzureMessagePeekProvider] PeekDeadLetterPagedAsync - Page: {pageNumber}, Size: {pageSize}");
@@ -218,7 +251,7 @@ public sealed class AzureMessagePeekProvider : IMessagePeekProvider
                 m.Subject ?? string.Empty,
                 m.ContentType ?? string.Empty,
                 m.EnqueuedTime,
-                m.Body.ToString(),
+                GetMessageBody(m, decompressBodies),
                 true))
             .ToList();
 

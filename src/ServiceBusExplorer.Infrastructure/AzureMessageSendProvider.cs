@@ -1,3 +1,4 @@
+using Azure;
 using Azure.Messaging.ServiceBus;
 using ServiceBusExplorer.Infrastructure.Models;
 
@@ -32,6 +33,39 @@ public sealed class AzureMessageSendProvider : IMessageSendProvider
         await using var sender = _client.CreateSender(queueOrTopic);
 
         var message = new Azure.Messaging.ServiceBus.ServiceBusMessage(messageBody)
+        {
+            ContentType = contentType,
+            Subject = label
+        };
+
+        if (properties != null)
+        {
+            foreach (var prop in properties)
+            {
+                message.ApplicationProperties.Add(prop.Key, prop.Value);
+            }
+        }
+
+        await sender.SendMessageAsync(message, ct);
+    }
+
+    public async Task SendMessageAsync(
+        string queueOrTopic,
+        string? subscription,
+        byte[] messageBody,
+        Dictionary<string, object>? properties = null,
+        string? contentType = null,
+        string? label = null,
+        CancellationToken ct = default)
+    {
+        if (subscription != null)
+        {
+            throw new ArgumentException("Cannot send messages to a subscription. Send to the topic instead.");
+        }
+
+        await using var sender = _client.CreateSender(queueOrTopic);
+
+        var message = new Azure.Messaging.ServiceBus.ServiceBusMessage(new BinaryData(messageBody))
         {
             ContentType = contentType,
             Subject = label

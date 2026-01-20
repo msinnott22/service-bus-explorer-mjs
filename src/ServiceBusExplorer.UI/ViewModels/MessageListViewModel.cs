@@ -51,6 +51,8 @@ public partial class MessageListViewModel : ObservableObject
     [ObservableProperty] private ObservableCollection<int> pageSizeOptions = [50, 100, 200, 500];
     [ObservableProperty] private string messageFilter = "All";
     [ObservableProperty] private ObservableCollection<string> messageFilterOptions = ["All", "Active", "Dead Letter"];
+    [ObservableProperty] private bool canUseZipDecompression;
+    [ObservableProperty] private bool useZipDecompression;
     
     // Loading overlay properties
     [ObservableProperty] private string loadingMessage = "Loading messages...";
@@ -178,6 +180,16 @@ public partial class MessageListViewModel : ObservableObject
     
 
 
+    partial void OnUseZipDecompressionChanged(bool value)
+    {
+        if (IsLoading || string.IsNullOrEmpty(_currentEntityPath) || !CanUseZipDecompression)
+        {
+            return;
+        }
+
+        _ = LoadPageAsync();
+    }
+
     public async Task LoadAsync(string entityPath, string? subscription)
     {
         // Cancel any previous loading operation
@@ -196,6 +208,11 @@ public partial class MessageListViewModel : ObservableObject
             FormattedMessageBody = null;
             _currentEntityPath = entityPath;
             _currentSubscription = subscription;
+            CanUseZipDecompression = !string.IsNullOrEmpty(subscription);
+            if (!CanUseZipDecompression)
+            {
+                UseZipDecompression = false;
+            }
             
             // Reset pagination
             CurrentPage = 1;
@@ -290,6 +307,7 @@ public partial class MessageListViewModel : ObservableObject
             var includeDeadLetter = MessageFilter == "All";
             var activeOnly = MessageFilter == "Active";
             var deadLetterOnly = MessageFilter == "Dead Letter";
+            var decompressBodies = CanUseZipDecompression && UseZipDecompression;
             
             // Get paged messages with filter
             var pagedResult = await _messageService.GetPagedMessagesAsync(
@@ -300,6 +318,7 @@ public partial class MessageListViewModel : ObservableObject
                 PageSize,
                 activeOnly,
                 deadLetterOnly,
+                decompressBodies,
                 _loadingCts.Token);
                 
             // Update pagination properties
@@ -619,12 +638,14 @@ public partial class MessageListViewModel : ObservableObject
             
             // Send the edited message as new
             Console.WriteLine($"[EditAndResendAsync] Sending edited message");
+            var compressBody = CanUseZipDecompression && UseZipDecompression;
             await _messageService.ResubmitMessageAsync(
                 _authContext,
                 _currentEntityPath!,
                 viewModel.MessageBody,
                 viewModel.ContentType,
-                null); // Label can be null for now
+                null, // Label can be null for now
+                compressBody);
             Console.WriteLine($"[EditAndResendAsync] Message sent successfully");
                 
             // Delete original message if requested
@@ -738,12 +759,14 @@ public partial class MessageListViewModel : ObservableObject
             
             // Resubmit the message
             _logService.LogInfo("MessageListViewModel", $"Resubmitting message {messageId}");
+            var compressBody = CanUseZipDecompression && UseZipDecompression;
             await _messageService.ResubmitMessageAsync(
                 _authContext,
                 _currentEntityPath,
                 SelectedMessage.Body ?? string.Empty,
                 SelectedMessage.ContentType,
-                SelectedMessage.Label);
+                SelectedMessage.Label,
+                compressBody);
             _logService.LogInfo("MessageListViewModel", $"Message {messageId} resubmitted successfully");
                 
             // Delete from dead letter if requested

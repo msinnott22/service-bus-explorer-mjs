@@ -10,6 +10,15 @@ public interface IMessageSendProvider : IAsyncDisposable
         string? contentType = null,
         string? label = null,
         CancellationToken ct = default);
+
+    Task SendMessageAsync(
+        string queueOrTopic,
+        string? subscription,
+        byte[] messageBody,
+        Dictionary<string, object>? properties = null,
+        string? contentType = null,
+        string? label = null,
+        CancellationToken ct = default);
         
     Task SendMessagesAsync(
         string queueOrTopic,
