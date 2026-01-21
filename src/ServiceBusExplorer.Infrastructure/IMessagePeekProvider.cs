@@ -8,12 +8,14 @@ public interface IMessagePeekProvider : IAsyncDisposable
         string queueOrTopic,
         string? subscription,
         int maxMessages = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default);
         
     Task<IReadOnlyList<ServiceBusReceivedMessageDto>> PeekDeadLetterAsync(
         string queueOrTopic,
         string? subscription,
         int maxMessages = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default);
         
     Task<PagedResult<ServiceBusReceivedMessageDto>> PeekPagedAsync(
@@ -21,6 +23,7 @@ public interface IMessagePeekProvider : IAsyncDisposable
         string? subscription,
         int pageNumber,
         int pageSize = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default);
         
     Task<PagedResult<ServiceBusReceivedMessageDto>> PeekDeadLetterPagedAsync(
@@ -28,6 +31,7 @@ public interface IMessagePeekProvider : IAsyncDisposable
         string? subscription,
         int pageNumber,
         int pageSize = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default);
         
     Task<(int activeCount, int deadLetterCount)> GetMessageCountsAsync(

@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Text;
 using ServiceBusExplorer.Infrastructure;
 using ServiceBusExplorer.Infrastructure.Models;
 
@@ -13,12 +15,14 @@ public sealed class MessageService(
     Func<ServiceBusAuthContext, IMessagePeekProvider> providerFactory,
     Func<ServiceBusAuthContext, IMessageDeleteProvider>? deleteProviderFactory = null,
     Func<ServiceBusAuthContext, IMessagePurgeProvider>? purgeProviderFactory = null,
-    Func<ServiceBusAuthContext, IMessageResubmitProvider>? resubmitProviderFactory = null)
+    Func<ServiceBusAuthContext, IMessageResubmitProvider>? resubmitProviderFactory = null,
+    Func<ServiceBusAuthContext, IMessageSendProvider>? sendProviderFactory = null)
 {
     private readonly Func<ServiceBusAuthContext, IMessagePeekProvider> _providerFactory = providerFactory;
     private readonly Func<ServiceBusAuthContext, IMessageDeleteProvider> _deleteProviderFactory = deleteProviderFactory ?? (authContext => new AzureMessageDeleteProvider(authContext));
     private readonly Func<ServiceBusAuthContext, IMessagePurgeProvider> _purgeProviderFactory = purgeProviderFactory ?? (authContext => new AzureMessagePurgeProvider(authContext));
     private readonly Func<ServiceBusAuthContext, IMessageResubmitProvider> _resubmitProviderFactory = resubmitProviderFactory ?? (authContext => new AzureMessageResubmitProvider(authContext));
+    private readonly Func<ServiceBusAuthContext, IMessageSendProvider> _sendProviderFactory = sendProviderFactory ?? (authContext => new AzureMessageSendProvider(authContext));
 
     /// <summary>
     ///     Peeks up to <paramref name="count"/> messages from the specified
@@ -30,47 +34,53 @@ public sealed class MessageService(
     ///     Subscription name when peeking a topic, otherwise <c>null</c>.
     /// </param>
     /// <param name="count">Maximum messages to peek.</param>
+    /// <param name="decompressBodies">When true, attempts to GZip-decompress message bodies.</param>
     /// <param name="ct">Cancellation token.</param>
     public async Task<IReadOnlyList<ServiceBusReceivedMessageDto>> PeekAsync(
         ServiceBusAuthContext authContext,
         string queueOrTopic,
         string? subscription = null,
         int count            = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         await using var provider = _providerFactory(authContext);
-        return await provider.PeekAsync(queueOrTopic, subscription, count, ct);
+        return await provider.PeekAsync(queueOrTopic, subscription, count, decompressBodies, ct);
     }
     
     /// <summary>
     ///     Peeks up to <paramref name="count"/> messages from the dead-letter
     ///     sub-queue of the specified entity.
     /// </summary>
+    /// <param name="decompressBodies">When true, attempts to GZip-decompress message bodies.</param>
     public async Task<IReadOnlyList<ServiceBusReceivedMessageDto>> PeekDeadLetterAsync(
         ServiceBusAuthContext authContext,
         string queueOrTopic,
         string? subscription = null,
         int count            = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         await using var provider = _providerFactory(authContext);
-        return await provider.PeekDeadLetterAsync(queueOrTopic, subscription, count, ct);
+        return await provider.PeekDeadLetterAsync(queueOrTopic, subscription, count, decompressBodies, ct);
     }
     
     /// <summary>
     ///     Peeks messages from both active and dead-letter queues.
     /// </summary>
+    /// <param name="decompressBodies">When true, attempts to GZip-decompress message bodies.</param>
     public async Task<IReadOnlyList<ServiceBusReceivedMessageDto>> PeekAllAsync(
         ServiceBusAuthContext authContext,
         string queueOrTopic,
         string? subscription = null,
         int count            = 50,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         await using var provider = _providerFactory(authContext);
         
-        var activeTask = provider.PeekAsync(queueOrTopic, subscription, count, ct);
-        var deadLetterTask = provider.PeekDeadLetterAsync(queueOrTopic, subscription, count, ct);
+        var activeTask = provider.PeekAsync(queueOrTopic, subscription, count, decompressBodies, ct);
+        var deadLetterTask = provider.PeekDeadLetterAsync(queueOrTopic, subscription, count, decompressBodies, ct);
         
         await Task.WhenAll(activeTask, deadLetterTask);
         
@@ -84,6 +94,7 @@ public sealed class MessageService(
     /// <summary>
     ///     Retrieves paged messages from the specified queue or topic.
     /// </summary>
+    /// <param name="decompressBodies">When true, attempts to GZip-decompress message bodies.</param>
     public async Task<PagedResult<ServiceBusReceivedMessageDto>> GetPagedMessagesAsync(
         ServiceBusAuthContext authContext,
         string queueOrTopic,
@@ -92,6 +103,7 @@ public sealed class MessageService(
         int pageSize = 50,
         bool activeOnly = false,
         bool deadLetterOnly = false,
+        bool decompressBodies = false,
         CancellationToken ct = default)
     {
         await using var provider = _providerFactory(authContext);
@@ -100,12 +112,12 @@ public sealed class MessageService(
         if (deadLetterOnly)
         {
             // Only dead letter messages
-            return await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, pageNumber, pageSize, ct);
+            return await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, pageNumber, pageSize, decompressBodies, ct);
         }
         else if (activeOnly)
         {
             // Only active messages
-            return await provider.PeekPagedAsync(queueOrTopic, subscription, pageNumber, pageSize, ct);
+            return await provider.PeekPagedAsync(queueOrTopic, subscription, pageNumber, pageSize, decompressBodies, ct);
         }
         else
         {
@@ -121,14 +133,14 @@ public sealed class MessageService(
                 var allMessages = new List<ServiceBusReceivedMessageDto>();
                 
                 // Get active messages first
-                var activeResult = await provider.PeekPagedAsync(queueOrTopic, subscription, 1, pageSize, ct);
+                var activeResult = await provider.PeekPagedAsync(queueOrTopic, subscription, 1, pageSize, decompressBodies, ct);
                 allMessages.AddRange(activeResult.Items);
                 
                 // If we have room, get dead letter messages
                 if (allMessages.Count < pageSize && deadLetterCount > 0)
                 {
                     var remainingSize = pageSize - allMessages.Count;
-                    var deadLetterResult = await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, 1, remainingSize, ct);
+                    var deadLetterResult = await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, 1, remainingSize, decompressBodies, ct);
                     allMessages.AddRange(deadLetterResult.Items);
                 }
                 
@@ -153,7 +165,7 @@ public sealed class MessageService(
                 {
                     // We're still in active messages
                     var activePageNumber = (skipCount / pageSize) + 1;
-                    var activeResult = await provider.PeekPagedAsync(queueOrTopic, subscription, activePageNumber, pageSize, ct);
+                    var activeResult = await provider.PeekPagedAsync(queueOrTopic, subscription, activePageNumber, pageSize, decompressBodies, ct);
                     
                     // Adjust for partial page
                     var startIndex = skipCount % pageSize;
@@ -167,7 +179,7 @@ public sealed class MessageService(
                     if (allMessages.Count < pageSize && deadLetterCount > 0)
                     {
                         var remainingSize = pageSize - allMessages.Count;
-                        var deadLetterResult = await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, 1, remainingSize, ct);
+                        var deadLetterResult = await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, 1, remainingSize, decompressBodies, ct);
                         allMessages.AddRange(deadLetterResult.Items);
                     }
                 }
@@ -176,7 +188,7 @@ public sealed class MessageService(
                     // We're in dead letter messages
                     var deadLetterSkip = skipCount - activeCount;
                     var deadLetterPageNumber = (deadLetterSkip / pageSize) + 1;
-                    var deadLetterResult = await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, deadLetterPageNumber, pageSize, ct);
+                    var deadLetterResult = await provider.PeekDeadLetterPagedAsync(queueOrTopic, subscription, deadLetterPageNumber, pageSize, decompressBodies, ct);
                     
                     // Adjust for partial page
                     var startIndex = deadLetterSkip % pageSize;
@@ -218,6 +230,7 @@ public sealed class MessageService(
     /// <param name="messageBody">Message body to send.</param>
     /// <param name="contentType">Content type of the message.</param>
     /// <param name="label">Message label/subject.</param>
+    /// <param name="compressBody">When true, GZip-compresses the message body before sending.</param>
     /// <param name="ct">Cancellation token.</param>
     public async Task ResubmitMessageAsync(
         ServiceBusAuthContext authContext,
@@ -225,17 +238,45 @@ public sealed class MessageService(
         string messageBody,
         string? contentType = null,
         string? label = null,
+        bool compressBody = false,
         CancellationToken ct = default)
     {
-        await using var sendProvider = new AzureMessageSendProvider(authContext);
-        await sendProvider.SendMessageAsync(
-            queueOrTopic,
-            null,
-            messageBody,
-            null,
-            contentType,
-            label,
-            ct);
+        await using var sendProvider = _sendProviderFactory(authContext);
+        if (compressBody)
+        {
+            var compressedBody = CompressMessageBody(messageBody);
+            await sendProvider.SendMessageAsync(
+                queueOrTopic,
+                null,
+                compressedBody,
+                null,
+                contentType,
+                label,
+                ct);
+        }
+        else
+        {
+            await sendProvider.SendMessageAsync(
+                queueOrTopic,
+                null,
+                messageBody,
+                null,
+                contentType,
+                label,
+                ct);
+        }
+    }
+
+    private static byte[] CompressMessageBody(string messageBody)
+    {
+        var inputBytes = Encoding.UTF8.GetBytes(messageBody ?? string.Empty);
+        using var outputStream = new MemoryStream();
+        using (var zipStream = new GZipStream(outputStream, CompressionMode.Compress, leaveOpen: true))
+        {
+            zipStream.Write(inputBytes, 0, inputBytes.Length);
+        }
+
+        return outputStream.ToArray();
     }
     
     /// <summary>

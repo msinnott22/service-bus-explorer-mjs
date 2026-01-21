@@ -1,4 +1,6 @@
 #nullable disable
+using System.IO.Compression;
+using System.Text;
 using FluentAssertions;
 using Moq;
 using ServiceBusExplorer.Core;
@@ -14,6 +16,7 @@ public class MessageServiceTests
     private Mock<IMessageDeleteProvider> _mockDeleteProvider;
     private Mock<IMessagePurgeProvider> _mockPurgeProvider;
     private Mock<IMessageResubmitProvider> _mockResubmitProvider;
+    private Mock<IMessageSendProvider> _mockSendProvider;
     private MessageService _sut;
     private const string ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=test;SharedAccessKey=test";
     private ServiceBusAuthContext _authContext;
@@ -25,6 +28,7 @@ public class MessageServiceTests
         _mockDeleteProvider = new Mock<IMessageDeleteProvider>();
         _mockPurgeProvider = new Mock<IMessagePurgeProvider>();
         _mockResubmitProvider = new Mock<IMessageResubmitProvider>();
+        _mockSendProvider = new Mock<IMessageSendProvider>();
 
         _authContext = new ConnectionStringAuthContext(ConnectionString);
 
@@ -32,7 +36,8 @@ public class MessageServiceTests
             _ => _mockPeekProvider.Object,
             _ => _mockDeleteProvider.Object,
             _ => _mockPurgeProvider.Object,
-            _ => _mockResubmitProvider.Object);
+            _ => _mockResubmitProvider.Object,
+            _ => _mockSendProvider.Object);
     }
 
     [Test]
@@ -53,7 +58,7 @@ public class MessageServiceTests
             PageSize = 50
         };
         
-        _mockPeekProvider.Setup(x => x.PeekPagedAsync("queue1", null, 1, 50, It.IsAny<CancellationToken>()))
+        _mockPeekProvider.Setup(x => x.PeekPagedAsync("queue1", null, 1, 50, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(pagedResult);
 
         // Act
@@ -62,7 +67,7 @@ public class MessageServiceTests
 
         // Assert
         result.Should().Be(pagedResult);
-        _mockPeekProvider.Verify(x => x.PeekPagedAsync("queue1", null, 1, 50, It.IsAny<CancellationToken>()), Times.Once);
+        _mockPeekProvider.Verify(x => x.PeekPagedAsync("queue1", null, 1, 50, It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Test]
@@ -83,7 +88,7 @@ public class MessageServiceTests
             PageSize = 50
         };
         
-        _mockPeekProvider.Setup(x => x.PeekDeadLetterPagedAsync("queue1", null, 1, 50, It.IsAny<CancellationToken>()))
+        _mockPeekProvider.Setup(x => x.PeekDeadLetterPagedAsync("queue1", null, 1, 50, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(pagedResult);
 
         // Act
@@ -92,7 +97,7 @@ public class MessageServiceTests
 
         // Assert
         result.Should().Be(pagedResult);
-        _mockPeekProvider.Verify(x => x.PeekDeadLetterPagedAsync("queue1", null, 1, 50, It.IsAny<CancellationToken>()), Times.Once);
+        _mockPeekProvider.Verify(x => x.PeekDeadLetterPagedAsync("queue1", null, 1, 50, It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Test]
@@ -127,9 +132,9 @@ public class MessageServiceTests
         
         _mockPeekProvider.Setup(x => x.GetMessageCountsAsync("queue1", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync((activeCount: 10, deadLetterCount: 5));
-        _mockPeekProvider.Setup(x => x.PeekPagedAsync("queue1", null, 1, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        _mockPeekProvider.Setup(x => x.PeekPagedAsync("queue1", null, 1, It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(activePage);
-        _mockPeekProvider.Setup(x => x.PeekDeadLetterPagedAsync("queue1", null, 1, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        _mockPeekProvider.Setup(x => x.PeekDeadLetterPagedAsync("queue1", null, 1, It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(deadLetterPage);
 
         // Act
@@ -235,5 +240,63 @@ public class MessageServiceTests
         // Assert
         _mockResubmitProvider.Verify(x => x.ResubmitMessageAsync(topicName, messageId, subscriptionName, It.IsAny<CancellationToken>()), Times.Once);
     }
-}
 
+    [Test]
+    public async Task ResubmitMessageAsync_ShouldCompressBody_WhenCompressionEnabled()
+    {
+        // Arrange
+        const string queueName = "queue1";
+        const string body = "{\"hello\":\"world\"}";
+        const string contentType = "application/json";
+        const string label = "label1";
+        byte[]? capturedBody = null;
+
+        _mockSendProvider
+            .Setup(x => x.SendMessageAsync(
+                queueName,
+                null,
+                It.IsAny<byte[]>(),
+                null,
+                contentType,
+                label,
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string?, byte[], Dictionary<string, object>?, string?, string?, CancellationToken>(
+                (_, _, bytes, _, _, _, _) => capturedBody = bytes)
+            .Returns(Task.CompletedTask);
+
+        // Act
+        await _sut.ResubmitMessageAsync(
+            _authContext,
+            queueName,
+            body,
+            contentType,
+            label,
+            compressBody: true);
+
+        // Assert
+        capturedBody.Should().NotBeNull();
+        using var inputStream = new MemoryStream(capturedBody!);
+        using var zipStream = new GZipStream(inputStream, CompressionMode.Decompress);
+        using var outputStream = new MemoryStream();
+        zipStream.CopyTo(outputStream);
+        var decompressed = Encoding.UTF8.GetString(outputStream.ToArray());
+
+        decompressed.Should().Be(body);
+        _mockSendProvider.Verify(x => x.SendMessageAsync(
+            queueName,
+            null,
+            It.IsAny<byte[]>(),
+            null,
+            contentType,
+            label,
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockSendProvider.Verify(x => x.SendMessageAsync(
+            queueName,
+            null,
+            It.IsAny<string>(),
+            It.IsAny<Dictionary<string, object>?>(),
+            It.IsAny<string?>(),
+            It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+}
